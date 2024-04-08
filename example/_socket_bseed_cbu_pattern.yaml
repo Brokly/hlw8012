@@ -1,0 +1,240 @@
+# шаблон настенной розетки BSEED
+# внутренний термодатчик - ОПЦИОНАЛЬНО
+
+packages:
+  device_base: !include __device_base_tuya.yaml
+
+esphome:
+  name: $devicename
+  project:
+    name: "BSEED.LibreTiny"
+    version: "CBU"
+  comment: "Wall Socket Power Metering, 16Amp"
+  on_boot:
+    then:
+       - lambda: |-
+          {
+             auto call = id(current_set).make_call();   
+             call.set_value(id(cur_off));   
+             call.perform(); 
+          }
+          {
+             auto call = id(temperature_set).make_call();   
+             call.set_value(id(temp_off));   
+             call.perform(); 
+          }
+          id(alert_id).publish_state(false);
+          if(id(relay_state)){
+             id(relay_sw).turn_off(); 
+          } else {
+             id(relay_sw).turn_on(); 
+          }
+
+external_components:
+  - source:
+      type: local
+      path: my_components
+
+bk72xx:
+  board: generic-bk7231n-qfn32-tuya
+  framework:
+    version: dev
+    options:
+      LT_AUTO_DOWNLOAD_REBOOT: 0
+
+preferences:
+  flash_write_interval: 1min
+
+globals:
+  - id: cur_off
+    type: float
+    restore_value: yes
+    initial_value: $max_current
+  - id: temp_off
+    type: float
+    restore_value: yes
+    initial_value: $max_temperature
+  - id: relay_state
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+
+dallas:
+#нога 1-wire для ДОПОЛНИТЕЛЬНОГО термодатчика  
+  - pin: P22
+    update_interval: 30s
+
+binary_sensor:
+# кнопка (на корпусе устройства)
+  - platform: gpio
+    pin:
+      number: P24
+      mode: INPUT_PULLUP
+      inverted: True
+    id: button
+    internal: true
+    on_click:
+    - min_length: 10ms
+      max_length: 1000ms
+# переключить реле при коротком нажатии   
+      then:
+        - switch.toggle: relay_sw
+# restart esp , нужно зажать кнопку на 5000 секунд (ПОСЧИТАТЬ ДО 8)
+    - min_length: 4000ms
+      max_length: 6000ms
+      then:
+        - switch.toggle: restart_sw
+# индикатор срабатывания защиты и отключения реле
+  - platform: template
+    device_class: safety
+    icon: mdi:chart-timeline-variant 
+    name: $upper_devicename Allarm  
+    id: alert_id
+    internal: true
+    on_state:
+      - lambda: |-
+         if(x){ // показать аварию   
+            auto call = id(led).turn_on(); 
+            call.set_effect("Blink_allarm");
+            call.perform();
+         } else { // показать режим работы
+            auto call = id(led).make_call();
+            call.set_state(id(relay_sw).state);
+            call.perform();
+            id(text_alert_id).publish_state("ОК");
+         }
+
+output:
+  - id: led_red
+    platform: gpio
+    pin: P26
+
+light:
+# для управления и индикации статуса работы
+  - platform: binary
+    id: led
+    output: led_red
+    internal: true
+    effects:
+      - strobe:
+      - strobe:
+          # индикация ошибки
+          name: Blink_allarm
+          colors:
+            - state: true
+              duration: 100ms
+            - state: false
+              duration: 100ms
+# светодиод статуса подключения к HA
+  - platform: status_led
+    id: id_stat_led
+    internal: true
+    pin: 
+      number: P7
+      inverted: false
+    
+switch:
+#реле
+  - platform: gpio
+    pin:
+      number: P6
+    restore_mode: RESTORE_DEFAULT_OFF
+    name: $upper_devicename Relay
+    id: relay_sw
+    on_turn_on:
+      # при включении сбрасываем индикатор аварии
+      - lambda: |- 
+         id(alert_id).publish_state(false);
+         auto call = id(led).turn_on(); 
+         call.perform();
+         id(relay_state)=true;
+    on_turn_off: 
+      - light.turn_off: led
+      - lambda: |- 
+         id(relay_state)=false;
+
+number:
+# регулятор тока отсечки
+  - platform: template
+    name: $upper_devicename Current OFF
+    id: current_set
+    optimistic: true
+    min_value: 0.1
+    max_value: $max_current
+    step: 0.1
+    on_value: 
+      - lambda: |-
+          id(cur_off)=x;
+          id(alert_id).publish_state(false);
+# регулятор темературы отсечки
+  - platform: template
+    name: $upper_devicename Temperature OFF
+    id: temperature_set
+    optimistic: true
+    min_value: 40.0
+    max_value: $max_temperature
+    step: 0.5
+    on_value: 
+      - lambda: |-
+          id(temp_off)=x;
+          id(alert_id).publish_state(false);
+
+sensor:
+#датчик тока и напряжения
+  - platform: hlw8012
+    sel_pin: P9
+    cf_pin: P20
+    cf1_pin: P8
+    model: BL0937
+    voltage_divider: 1505.7
+    change_mode_every: 1
+    current:
+      name: ${upper_devicename} Current
+      filters:
+        - calibrate_linear:
+          - 0.0 -> 0.0
+          - 0.006 -> 0.005
+          - 0.280 -> 0.240
+          - 9.15 -> 7.44
+      on_value:
+        - lambda: |-
+           if(x>=id(cur_off)){ //пеегрузка 
+              id(relay_sw).turn_off(); // отключить реле
+              id(alert_id).publish_state(true);
+              id(text_alert_id).publish_state("Оverload");
+              ESP_LOGE("This","Alarm ! Current %f , overload. All Turn Off", x);
+           }
+    voltage:
+      name: ${upper_devicename} Voltage
+      filters:
+        - calibrate_linear:
+          - ${zerro_calibrate} -> 0.0
+          - 220.0 -> 220.0
+    power:
+      name: ${upper_devicename} Power
+    energy:
+      name: ${upper_devicename} Energy
+    update_interval: 1s
+# датчик DALLAS для контроля нагрева (ДОПОЛНИЕЛЬНО усановлен, в базе нет)
+  - platform: dallas
+    internal: ${no_termosensor}
+    index: 0
+    id: temperature
+    name: $upper_devicename Temperature
+    filters:  
+      -  offset: ${temperature_offset}    
+    # при излишнем нагреве - отключить реле, поднять флаг защиты
+    on_value:
+        - lambda: |-
+           if(x>=id(temp_off)){ //пеегрев 
+              id(relay_sw).turn_off(); // отключить реле
+              id(alert_id).publish_state(true);
+              id(text_alert_id).publish_state("Оverheating");
+              ESP_LOGE("This","Alarm ! Current %f , overheating. All Turn Off", x);
+           }
+
+text_sensor:
+  - platform: template
+    icon: mdi:chart-timeline-variant 
+    name: $upper_devicename Error  
+    id: text_alert_id

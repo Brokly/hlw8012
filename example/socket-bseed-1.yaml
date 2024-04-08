@@ -1,0 +1,14 @@
+substitutions:
+  devicename: socket-bseed-1
+  upper_devicename: Socket BSEED Free Pos1
+  location: Не установлен.
+  hardware: Wall Socket BSEED (Настенная розетка BSEED (CBU), max 16 Amp) + DS18B20.
+  wifi_ip: !secret ip_socket-bseed-1
+  zerro_calibrate: "0.0" # калибровка нулевого напряжения
+  time_scan_termosensor: 15s # при отсутствии датчика ставим 4294967295ms (максиальный период сканирования)
+  no_termosensor: 'false' # признак отсутствия термодатчика, если false, то ДАТЧИК ЕСТЬ !
+  temperature_offset: "-15.0" # калибровка термодатчика
+  max_current: "16.0" # максимальная сила тока
+  max_temperature: "100.0" # максимальная температура
+
+<<: !include _socket_bseed_cbu_pattern.yaml
