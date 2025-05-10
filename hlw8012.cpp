@@ -14,9 +14,10 @@ static const uint32_t HLW8012_CLOCK_FREQUENCY = 3579000;
 void HLW8012Component::setup() {
   float reference_voltage = 0;
   ESP_LOGCONFIG(TAG, "Setting up HLW8012...");
-  this->sel_pin_->setup();
-  this->sel_pin_->digital_write(this->current_mode_);
-
+  if(sel_pin_!=nullptr){
+     this->sel_pin_->setup();
+     this->sel_pin_->digital_write(this->current_mode_);
+  } 
   this->cf_pin_->setup();
   this->cf_timer_= esphome::micros();
   this->cf_pin_->attach_interrupt(HLW8012Component::cf_intr, this, gpio::INTERRUPT_RISING_EDGE);
@@ -41,9 +42,14 @@ void HLW8012Component::setup() {
     this->voltage_multiplier_ = reference_voltage * this->voltage_divider_ * 256.0f / HLW8012_CLOCK_FREQUENCY;
   }
 }
+
 void HLW8012Component::dump_config() {
   ESP_LOGCONFIG(TAG, "HLW8012:");
-  LOG_PIN("  SEL Pin: ", this->sel_pin_)
+  if(sel_pin_!=nullptr){
+     LOG_PIN("  SEL Pin: ", this->sel_pin_)
+  } else {
+     ESP_LOGCONFIG(TAG, "  SEL Pin - not assigned");
+  }
   LOG_PIN("  CF Pin: ", this->cf_pin_)
   LOG_PIN("  CF1 Pin: ", this->cf1_pin_)
   ESP_LOGCONFIG(TAG, "  Change measurement mode every %" PRIu32, this->change_mode_every_);
@@ -57,71 +63,79 @@ void HLW8012Component::dump_config() {
 }
 float HLW8012Component::get_setup_priority() const { return setup_priority::DATA; }
 
-float HLW8012Component::getHz(uint32_t* old_count, uint32_t* old_time, uint32_t now_count, uint32_t now){
-   float delta_count=now_count-*old_count;
-   *old_count=now_count;
-   float delta_time=now-*old_time;
-   *old_time=now;
+float HLW8012Component::getHz(uint32_t count, uint32_t delta_time){
    if(delta_time>0){
-      return (delta_count*1000000)/delta_time;      
+      return ((float)count*1000000)/delta_time;      
    }
    return 0.0;   
 }
 
 void HLW8012Component::update() {
-  uint32_t raw_cf=this->isr_cf_counter_-this->cf_counter_;
-  float cf_hz=getHz(&(this->cf_counter_), &(this->cf_timer_), this->isr_cf_counter_, this->isr_cf_time_);
-  float cf1_hz=getHz(&(this->cf1_counter_), &(this->cf1_timer_), this->isr_cf1_counter_, this->isr_cf1_time_);
+
+  if (this->change_mode_every_!=0 && this->change_mode_at_++ >= (this->change_mode_every_-1)) {
+    if(this->sel_pin_!=nullptr){
+       this->current_mode_ = !this->current_mode_;
+       ESP_LOGV(TAG, "Changing mode to %s mode", this->current_mode_ ? "VOLTAGE" : "CURRENT");
+       this->sel_pin_->digital_write(this->current_mode_);
+    }
+    this->change_mode_at_ = 0;
+  }
+
+  uint32_t cf_save_counter_=this->isr_cf_counter_;
+  this->isr_cf_counter_=0;
+  uint32_t cf_save_time_=this->cf_timer_;
+  this->cf_timer_=esphome::micros();
+
+  uint32_t cf1_save_counter_=this->isr_cf1_counter_;
+  this->isr_cf1_counter_=0;
+  uint32_t cf1_save_time_=this->cf1_timer_;
+  this->cf1_timer_=esphome::micros();
+
+  if (this->change_mode_at_) {
+    return;
+  }
 
   if (this->nth_value_++ < 2) {
     return;
   }
 
-  float power = cf_hz * this->power_multiplier_;
-
-  if (this->change_mode_at_ != 0) {
-    // Only read cf1 or cf after one cycle. Apparently it's quite unstable after being changed.
-    if (this->current_mode_) {
-      float voltage = cf1_hz * this->voltage_multiplier_;
-      ESP_LOGD(TAG, "Got power=%.1fW, voltage=%.1fV", power, voltage);
-      if (this->voltage_sensor_ != nullptr) {
-        this->voltage_sensor_->publish_state(voltage);
-      }
-    } else {
-      float current = cf1_hz * this->current_multiplier_;
-      ESP_LOGD(TAG, "Got power=%.1fW, current=%.2fA", power, current);
-      if (this->current_sensor_ != nullptr) {
-        this->current_sensor_->publish_state(current);
-      }
-    }
+  float cf_hz=getHz(cf_save_counter_, cf_timer_-cf_save_time_);
+  float cf1_hz=getHz(cf1_save_counter_, cf1_timer_-cf1_save_time_);
+  
+  if (this->energy_sensor_ != nullptr) {
+     float energy = (float)cf_save_counter_ * this->power_multiplier_ / 3600;
+     this->energy_sensor_->publish_state(this->energy_sensor_->state + energy);
   }
 
+
+  float power = cf_hz * this->power_multiplier_;
   if (this->power_sensor_ != nullptr) {
     this->power_sensor_->publish_state(power);
   }
-
-  if (this->energy_sensor_ != nullptr) {
-    cf_total_pulses_ += raw_cf;
-    float energy = cf_total_pulses_ * this->power_multiplier_ / 3600;
-    this->energy_sensor_->publish_state(energy);
+    
+  // Only read cf1 or cf after one cycle. Apparently it's quite unstable after being changed.
+  if (!(this->current_mode_)) {
+    float voltage = cf1_hz * this->voltage_multiplier_;
+    ESP_LOGD(TAG, "Got power=%.1fW, voltage=%.1fV", power, voltage);
+    if (this->voltage_sensor_ != nullptr) {
+      this->voltage_sensor_->publish_state(voltage);
+    }
+  } else {
+    float current = cf1_hz * this->current_multiplier_;
+    ESP_LOGD(TAG, "Got power=%.1fW, current=%.2fA", power, current);
+    if (this->current_sensor_ != nullptr) {
+      this->current_sensor_->publish_state(current);
+    }
   }
 
-  if (this->change_mode_every_ != 0 && this->change_mode_at_++ == this->change_mode_every_) {
-    this->current_mode_ = !this->current_mode_;
-    ESP_LOGV(TAG, "Changing mode to %s mode", this->current_mode_ ? "VOLTAGE" : "CURRENT");
-    this->change_mode_at_ = 0;
-    this->sel_pin_->digital_write(this->current_mode_);
-  }
 
 }
 
 void IRAM_ATTR HLW8012Component::cf_intr(HLW8012Component *sensor) {
-   sensor->isr_cf_time_=esphome::micros();
    sensor->isr_cf_counter_++;
 }
 
 void IRAM_ATTR HLW8012Component::cf1_intr(HLW8012Component *sensor) {
-   sensor->isr_cf1_time_=esphome::micros();
    sensor->isr_cf1_counter_++;
 }
 

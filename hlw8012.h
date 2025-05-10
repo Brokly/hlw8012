@@ -29,7 +29,7 @@ class HLW8012Component : public PollingComponent {
   void update() override;
 
   void set_initial_mode(HLW8012InitialMode initial_mode) {
-    current_mode_ = initial_mode == HLW8012_INITIAL_MODE_CURRENT;
+    current_mode_ = initial_mode != HLW8012_INITIAL_MODE_CURRENT;
   }
   void set_sensor_model(HLW8012SensorModels sensor_model) { sensor_model_ = sensor_model; }
   void set_change_mode_every(uint32_t change_mode_every) { change_mode_every_ = change_mode_every; }
@@ -41,34 +41,29 @@ class HLW8012Component : public PollingComponent {
   void set_voltage_sensor(sensor::Sensor *voltage_sensor) { voltage_sensor_ = voltage_sensor; }
   void set_current_sensor(sensor::Sensor *current_sensor) { current_sensor_ = current_sensor; }
   void set_power_sensor(sensor::Sensor *power_sensor) { power_sensor_ = power_sensor; }
-  void set_energy_sensor(sensor::Sensor *energy_sensor) { energy_sensor_ = energy_sensor; }
+  void set_energy_sensor(sensor::Sensor *energy_sensor) { energy_sensor_ = energy_sensor; energy_sensor_->publish_state(0);}
 
  protected:
-  uint32_t nth_value_{0};
+  int32_t nth_value_{0};
   bool current_mode_{false};
-  uint32_t change_mode_at_{0};
-  uint32_t change_mode_every_{8};
+  int32_t change_mode_at_{0};
+  int32_t change_mode_every_{8};
   float current_resistor_{0.001};
   float voltage_divider_{2351};
   HLW8012SensorModels sensor_model_{HLW8012_SENSOR_MODEL_HLW8012};
-  uint64_t cf_total_pulses_{0};
   GPIOPin *sel_pin_{nullptr};
 
   InternalGPIOPin *cf1_pin_{nullptr};
-  uint32_t cf1_counter_{0};
   volatile uint32_t isr_cf1_counter_{0};
-  volatile uint32_t isr_cf1_time_{0};
   uint32_t cf1_timer_{0};
   static void cf1_intr(HLW8012Component *sensor);
 
   InternalGPIOPin *cf_pin_{nullptr};
-  uint32_t cf_counter_{0};
   volatile uint32_t isr_cf_counter_{0};
-  volatile uint32_t isr_cf_time_{0};
   uint32_t cf_timer_{0};
   static void cf_intr(HLW8012Component *sensor);
   
-  float getHz(uint32_t* old_count, uint32_t* old_time, uint32_t now_count, uint32_t now);
+  float getHz(uint32_t count, uint32_t delta_time);
 
   sensor::Sensor *voltage_sensor_{nullptr};
   sensor::Sensor *current_sensor_{nullptr};
